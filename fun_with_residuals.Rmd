@@ -1,0 +1,387 @@
+---
+title: "fun_with_residuals"
+output: html_document
+date: "2025-10-06"
+editor_options: 
+  chunk_output_type: console
+---
+
+Creating the data
+
+```{r}
+install.packages("influence.ME")
+
+library(lme4)
+library(ggplot2)
+library(dplyr)
+library(stats)
+set.seed(123)
+
+# Simulate data
+n_subj <- 30  #Level 2 units
+n_time <- 4  #Level 1 units
+dat <- expand.grid(id = factor(1:n_subj), x = 1:n_time) #All combinations
+dat$intercept <- rnorm(n_subj)[dat$id] #Random intercepts
+dat$y <- 2 + 0.5 * dat$x + dat$intercept + rnorm(nrow(dat), sd = 0.5) 
+#Arbitrary mean of 2 and slope of .5.
+#Random intercepts (level-2) added back in and some level-1 resiudal noise.
+
+# Fit models
+lm_fit  <- lm(y ~ x, data = dat)
+lmm_fit <- lmer(y ~ x + (1 | id), data = dat)
+
+summary(lm_fit)
+summary(lmm_fit)
+
+# Get film_fit# Get fitted values and residuals
+dat <- dat %>%
+  mutate(
+    lm_fitted  = fitted(lm_fit),
+    lm_resid   = resid(lm_fit),
+    lmm_fitted = fitted(lmm_fit),
+    lmm_resid  = resid(lmm_fit)
+  )
+```
+
+
+Let's take a look at the data and some plots.
+
+
+```{r}
+head(dat)
+
+#Spag plot of raw trajectories
+ggplot(dat, aes(x = x, y = y, group = id, color = id)) +
+  geom_point() +
+  geom_line() +
+  theme_minimal()
+
+#Linear model for each subjects
+ggplot(data = dat, 
+  aes(x = x, y = y, group = id)) +
+  geom_smooth(method = "lm", 
+              se=FALSE, 
+              linewidth = 1, 
+              color = "purple") +
+  theme_minimal()
+
+
+#Comparing magnitude of residuals
+ggplot(dat, aes(x = x, group = id)) +
+  geom_line(aes(y = lm_resid), color = "#F8766D", alpha = 0.7) +
+  geom_line(aes(y = lmm_resid), color = "#619CFF", alpha = 0.7) +
+  theme_minimal() +
+  labs(y = "Residual", title = "Residuals by Model (LM=blue, LMM=red)")
+```
+
+From these 3 plots we see the following...
+- General trend is positive
+- People differ at x = 1
+- Slopes also differ
+- Residuals are tighter with LMM model
+
+
+This next part is useful for examining random intercept differences. For example, it could be the case that we care about individuals who are high vs. low tissue iron values at baseline.
+
+```{r}
+# Extract best linear unbiased predictors (BLUPs; random intercepts per subject)
+ranef_df <- ranef(lmm_fit)$id %>%
+  tibble::rownames_to_column("id") %>%
+  rename(rand_intercept = `(Intercept)`)
+
+# Join with main data
+dat <- left_join(dat, ranef_df, by = "id")
+
+ggplot(ranef_df, aes(x = id, y = rand_intercept)) +
+  geom_col(fill = "darkred") +
+  theme_minimal() +
+  coord_flip() +
+  labs(title = "Subject-specific random intercepts (BLUPs)",
+       y = "Estimated deviation", x = "Subject")
+```
+
+Fun! Let's bookmark a few examples for later. For demonstration lets look at...
+
+Subject 18: Data was smaller than average
+Subject 16: Data was larger than average
+Subject 22: Data was close to average
+
+
+It will also be useful to look at differences in residuals across the linear and multilevel models.
+
+```{r}
+# Gather residuals into long format for easier plotting
+resid_long <- dat %>%
+  select(id, x, lm_resid, lmm_resid) %>%
+  pivot_longer(cols = c(lm_resid, lmm_resid), names_to = "model", values_to = "residual")
+
+
+#6 subjects lazy way 
+ggplot(resid_long %>% filter(id > 15 & id < 21), aes(x = x, y = residual, color = model)) +
+  geom_point(alpha = 0.6) +
+  geom_line(alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_wrap(~id) +
+  theme_minimal() +
+  labs(title = "Residuals of LM vs LMM for All Subjects",
+       y = "Residuals",
+       color = "Model")
+
+#For whole sample
+ggplot(resid_long, aes(x = x, y = residual, color = model)) +
+  geom_point(alpha = 0.6) +
+  geom_line(alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_wrap(~id) +
+  theme_minimal() +
+  labs(title = "Residuals of LM vs LMM for All Subjects",
+       y = "Residuals",
+       color = "Model")
+```
+
+Now we will do a similar activity, but with the predictions. Keep in mind that the results from the linear model are the same for all subjects!
+
+```{r}
+#Next plot to work on is looking at the raw data and the predictions together?
+ggplot(data = dat %>% filter(id > 15 & id < 21), aes(x=x,y=y,group = id)) +
+  geom_point() +
+  geom_line() +
+  geom_line(aes(y = lm_fitted), color = "#F8766D", size = 1) +
+  geom_line(aes(y = lmm_fitted), color = "#619CFF", size = 1) +
+  theme_minimal() +
+  facet_wrap(~id) +
+  labs(title = "Predictions by Model (LM=red, LMM=blue)")
+
+#For all subjects
+ggplot(data = dat, aes(x=x,y=y,group = id, colour = id)) +
+  geom_point() +
+  geom_line() +
+  geom_line(aes(y = lm_fitted), color = "#F8766D", size = 1) +
+  geom_line(aes(y = lmm_fitted), color = "#619CFF", size = 1) +
+  theme_minimal() +
+  facet_wrap(~id) +
+  labs(title = "Predictions by Model (LM=red, LMM=blue)")
+```
+
+Last thing to show is some individual plots, to get a sense of the relations between residuals and predictions when you include (or not) a random effect.
+
+Let's look at three examples from above
+
+Subject 18: Data was smaller than average
+Subject 16: Data was larger than average
+Subject 17: Data was close to average
+
+```{r}
+# Reshape to long format for easy faceting
+dat_longy <- dat %>%
+  filter(id %in% c(16,18,22)) %>%
+  select(id, x, y, lm_fitted, lmm_fitted, lm_resid, lmm_resid) %>%
+  pivot_longer(
+    cols = starts_with("lm_") | starts_with("lmm_"),
+    names_to = c("model", "type"),
+    names_pattern = "(lm|lmm)_(.*)",
+    values_to = "value"
+  )
+
+#Subject 16: Data was larger than average
+ggplot(dat_longy %>% filter(id == 16), 
+       aes(x = x, y = value, color = model, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(
+    data = dat %>% filter(id == 16) %>% mutate(type = "fitted"),
+    aes(x = x, y = y),
+    inherit.aes = FALSE,
+    color = "black", size = 2
+  ) +
+  geom_line(
+    data = dat %>% filter(id == 16) %>% mutate(type = "fitted"),
+    aes(x = x, y = y),
+    inherit.aes = FALSE,
+    color = "black", size = 0.8, linetype = "solid"
+  ) +
+  geom_hline(
+    data = dat_longy %>% filter(type == "resid"),
+    aes(yintercept = 0),
+    linetype = "dotted",
+    inherit.aes = FALSE
+  ) +
+  facet_wrap(~type, scales = "free_y", ncol = 1) +
+  scale_color_manual(values = c("lm" = "#F8766D", "lmm" = "#619CFF")) +
+  scale_linetype_manual(values = c("fitted" = "solid", "resid" = "dashed")) +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "Observed vs Fitted and Residuals for Subject 16",
+    x = "x",
+    y = "Value",
+    color = "Model",
+    linetype = "Type"
+  )
+
+#Subject 18: Data was smaller than average
+ggplot(dat_longy %>% filter(id == 18), 
+       aes(x = x, y = value, color = model, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(
+    data = dat %>% filter(id == 18) %>% mutate(type = "fitted"),
+    aes(x = x, y = y),
+    inherit.aes = FALSE,
+    color = "black", size = 2
+  ) +
+  geom_line(
+    data = dat %>% filter(id == 18) %>% mutate(type = "fitted"),
+    aes(x = x, y = y),
+    inherit.aes = FALSE,
+    color = "black", size = 0.8, linetype = "solid"
+  ) +
+  geom_hline(
+    data = dat_longy %>% filter(type == "resid"),
+    aes(yintercept = 0),
+    linetype = "dotted",
+    inherit.aes = FALSE
+  ) +
+  facet_wrap(~type, scales = "free_y", ncol = 1) +
+  scale_color_manual(values = c("lm" = "#F8766D", "lmm" = "#619CFF")) +
+  scale_linetype_manual(values = c("fitted" = "solid", "resid" = "dashed")) +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "Observed vs Fitted and Residuals for Subject 16",
+    x = "x",
+    y = "Value",
+    color = "Model",
+    linetype = "Type"
+  )
+
+#Subject 22: Data was close to average
+ggplot(dat_longy %>% filter(id == 22), 
+       aes(x = x, y = value, color = model, linetype = type)) +
+  geom_line(size = 1) +
+  geom_point(
+    data = dat %>% filter(id == 22) %>% mutate(type = "fitted"),
+    aes(x = x, y = y),
+    inherit.aes = FALSE,
+    color = "black", size = 2
+  ) +
+  geom_line(
+    data = dat %>% filter(id == 22) %>% mutate(type = "fitted"),
+    aes(x = x, y = y),
+    inherit.aes = FALSE,
+    color = "black", size = 0.8, linetype = "solid"
+  ) +
+  geom_hline(
+    data = dat_longy %>% filter(type == "resid"),
+    aes(yintercept = 0),
+    linetype = "dotted",
+    inherit.aes = FALSE
+  ) +
+  facet_wrap(~type, scales = "free_y", ncol = 1) +
+  scale_color_manual(values = c("lm" = "#F8766D", "lmm" = "#619CFF")) +
+  scale_linetype_manual(values = c("fitted" = "solid", "resid" = "dashed")) +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "Observed vs Fitted and Residuals for Subject 16",
+    x = "x",
+    y = "Value",
+    color = "Model",
+    linetype = "Type"
+  )
+```
+
+
+Cooks distance is also useful to be aware of.
+
+```{r}
+#For lm
+#cook_lm <- cooks.distance(lm_fit)
+#print(cook_lm)
+#
+##Ac common threshold for "large" Cook's D is >4n, where n is number of observations
+#plot(cook_lm, type = "h", main = "Cook's Distance", ylab = "Cook's D")
+#abline(h = 4 / length(cook_lm), col = "red", lty = 2) 
+#
+##Identify influential observations
+#which(cook_lm > (4/length(cook_lm)))
+#
+##What subjects are these?
+#dat[which(cook_lm > (4 / length(cook_lm))), ]
+#
+##Plot of influential observations.
+#ggplot(dat, aes(x = x, y = y, group = id)) +
+#  geom_point(aes(color = cook_lm > (4 / length(cook_lm))), size = 2) +
+#  geom_line(linewidth = 1) +
+#  scale_color_manual(values = c("FALSE" = "black", "TRUE" = "red")) +
+#  theme_minimal() +
+#  labs(color = "Influential?")
+#
+##Showing where they fall as residual estimates.
+#ggplot(dat, aes(x = x, y = lm_resid, group = id)) +
+#  geom_point(aes(color = cook_lm > (4 / length(cook_lm))), size = 2) +
+#  geom_line(linewidth = 1) +
+#  scale_color_manual(values = c("FALSE" = "black", "TRUE" = "red")) +
+#  theme_minimal() +
+#  labs(color = "Influential?")
+```
+
+Now let's see what results look like when doing this in a multilevel model framework. Remember that it is always a bit trickier 
+
+```{r}
+#Looking at just observation-level influence (should be more or less equivalent to above)
+# Compute influence measures
+#infl <- influence.ME::influence(lmm_fit, obs = TRUE)
+#
+## Extract Cook’s distance
+#cook_lmm <- cooks.distance(infl)
+#
+#print(cook_lmm)
+#
+## Plot or inspect
+#plot(cook_lmm, type = "h", main = "Cook's Distance", ylab = "Cook's D")
+#abline(h = 4 / length(cook_lmm), col = "red", lty = 2) 
+#
+##Identify influential observations
+#which(cook_lmm > (4/length(cook_lmm)))
+#
+##What subjects are these?
+#dat[which(cook_lmm > (4 / length(cook_lmm))), ]
+#
+#
+##Plot of influential observations.
+#ggplot(dat, aes(x = x, y = y, group = id)) +
+#  geom_point(aes(color = cook_lmm > (4 / length(cook_lmm))), size = 2) +
+#  geom_line(linewidth = 1) +
+#  scale_color_manual(values = c("FALSE" = "black", "TRUE" = "red")) +
+#  theme_minimal() +
+#  labs(color = "Influential?")
+#
+#
+##Huh, not seeing much there, let's isolate these subjects.
+## Add Cook's distance to data frame
+#dat$cook_lmm <- cook_lmm
+#dat$influential <- cook_lmm > (4 / length(cook_lmm))
+#
+## Identify subjects with influential observations
+#infl_ids <- unique(dat$id[dat$influential])
+#
+## Plot only those subjects
+#ggplot(dat %>% filter(id %in% infl_ids),
+#       aes(x = x, y = y, group = id)) +
+#  geom_line(linewidth = 1, color = "black") +
+#  geom_point(aes(color = influential), size = 2) +
+#  scale_color_manual(values = c("FALSE" = "black", "TRUE" = "red")) +
+#  theme_minimal() +
+#  labs(color = "Influential?")
+#
+#
+#
+#
+#
+#
+#
+#
+#infl_subj <- influence.ME::influence(lmm_fit, group = "id")
+#cook_lmm_subj <- cooks.distance(infl_subj)
+#
+##Everything Gaussian so should be ok.
+#plot(cook_lmm_subj, type = "h", main = "Cook's Distance", ylab = "Cook's D")
+#abline(h = 4 / 30, col = "red", lty = 2) 
+```
+
